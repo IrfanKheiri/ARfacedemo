@@ -1,29 +1,52 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta charset="UTF-8" />
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Face Replacement Demo</title>
-  <!-- Link the PWA manifest and stylesheet -->
-  <link rel="manifest" href="./manifest.webmanifest">
-  <link rel="stylesheet" href="style.css">
-  <meta name="theme-color" content="#007bff">
+
+  <!-- PWA (optional if you already have these in your project) -->
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <meta name="theme-color" content="#000000" />
+
+  <link rel="stylesheet" href="./style.css" />
+  <style>
+    /* Minimal safe defaults if style.css isn’t present */
+    body { margin:0; background:#111; color:#fff; font-family:system-ui, sans-serif; }
+    #app { display:flex; flex-direction:column; min-height:100vh; }
+    #stage { flex:1; display:grid; place-items:center; }
+    #preview { width:100vw; height:auto; max-height:78vh; background:#000; }
+    #controls { display:flex; gap:.75rem; padding:1rem; justify-content:center; background:#0008; }
+    button { padding:.8rem 1rem; border:0; border-radius:.75rem; background:#1e88e5; color:#fff; font-weight:600; }
+    button.secondary{ background:#424242; }
+    #banner { text-align:center; padding:.5rem .75rem; font-size:.9rem; color:#ffd54f; }
+  </style>
+
+  <!-- Load MediaPipe global builds (NO ESM imports) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"
+          crossorigin="anonymous"></script>
 </head>
 <body>
-  <!-- Main container for the demo. Video and canvas are layered
-       so that the live preview can show both the camera feed and
-       the composited character image on top. -->
   <div id="app">
-    <video id="video" autoplay muted playsinline></video>
-    <canvas id="preview"></canvas>
+    <div id="banner">Run over HTTPS and allow camera access</div>
+
+    <div id="stage">
+      <video id="cam" autoplay muted playsinline hidden></video>
+      <canvas id="preview" width="720" height="960"></canvas>
+    </div>
+
     <div id="controls">
-      <button id="start-btn">Start Camera</button>
-      <button id="capture-btn" disabled>Capture</button>
-      <!-- Save button is actually an anchor; its href and download attributes are set at runtime -->
-      <a id="save-btn" class="button" role="button" download style="display:none;">Save</a>
+      <button id="startBtn">Start Camera</button>
+      <button id="captureBtn" class="secondary" disabled>Capture</button>
+      <button id="saveBtn" class="secondary" disabled>Save</button>
+      <button id="resetBtn" class="secondary" disabled>Reset</button>
     </div>
   </div>
-  <!-- Import main script as a module -->
-  <script type="module" src="./main.js"></script>
+
+  <!-- Your app logic -->
+  <script src="./main.js"></script>
 </body>
 </html>
