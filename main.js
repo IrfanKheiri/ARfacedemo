@@ -1,6 +1,7 @@
-/* Face Replacement Demo (globals build)
-   - Uses MediaPipe FaceMesh and Camera Utils loaded via <script> tags in index.html
-   - No ES module imports here.
+/* Face Replacement Demo — main.js (globals build)
+   Requires these in index.html BEFORE this file:
+     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
 */
 
 (() => {
@@ -13,11 +14,10 @@
     resetBtn: document.getElementById('resetBtn'),
     banner: document.getElementById('banner'),
   };
-
   const ctx = els.canvas.getContext('2d', { alpha: true });
 
   // Assets & metadata
-  const metaUrl = './assets/slot.json';
+  const META_URL = './assets/slot.json';
   const baseImg = new Image();
   baseImg.src = './assets/character_base.png';
   const maskImg = new Image();
@@ -28,188 +28,45 @@
     faceMesh: null,
     camera: null,
     running: false,
-    lastResults: null,
-    capturedBlob: null,
+    capturedUrl: null,
   };
 
-  // Utility: load JSON
+  // --- Layout / sizing -------------------------------------------------------
+  function fitPreviewCanvas() {
+    // Width: full viewport (cap desktop width)
+    const cssW = Math.min(window.innerWidth, 1024);
+
+    // Aspect from meta.preview if available, else 3:4
+    const aspect =
+      state?.meta?.preview
+        ? state.meta.preview.height / state.meta.preview.width
+        : (960 / 720);
+
+    // Subtract banner (~32px), footer (~78px), padding (~16px)
+    const maxH = Math.max(
+      200,
+      window.innerHeight - 32 - 78 - 16
+    );
+    const cssH = Math.min(Math.round(cssW * aspect), maxH);
+
+    // CSS size
+    els.canvas.style.width = cssW + 'px';
+    els.canvas.style.height = 'auto';
+
+    // Internal bitmap size (for crisp rendering)
+    els.canvas.width = cssW;
+    els.canvas.height = cssH;
+  }
+  window.addEventListener('resize', fitPreviewCanvas);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) fitPreviewCanvas();
+  });
+
+  // --- Helpers ---------------------------------------------------------------
   async function loadMeta(url) {
     const res = await fetch(url, { cache: 'no-cache' });
     if (!res.ok) throw new Error('Failed to load character metadata');
     return res.json();
-  }
-
-  // Draw the live composite
-  function drawComposite(results) {
-    const { multiFaceLandmarks } = results || {};
-    // Clear
-    ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
-    // Base character layer
-    ctx.drawImage(baseImg, 0, 0, els.canvas.width, els.canvas.height);
-
-    if (!multiFaceLandmarks || multiFaceLandmarks.length === 0) return;
-
-    const lm = multiFaceLandmarks[0]; // largest face already ensured by FaceMesh
-    const pts = pickKeypoints(lm); // {eyeL:[x,y], eyeR:[x,y], chin:[x,y]} in video space
-
-    // Project / transform the video’s face ROI into the slot coordinates
-    placeFaceIntoSlot(pts);
-  }
-
-  // Pick left/right eye outer corners and chin from FaceMesh landmarks.
-  // Indices (using MediaPipe FaceMesh):
-  // Left eye outer: 33, Right eye outer: 263, Chin tip (approx): 152
-  function pickKeypoints(lm) {
-    // Landmarks are in normalized coordinates [0..1] for x/y
-    const vx = els.video.videoWidth;
-    const vy = els.video.videoHeight;
-
-    const idx = { L: 33, R: 263, C: 152 };
-    const eyeL = [lm[idx.L].x * vx, lm[idx.L].y * vy];
-    const eyeR = [lm[idx.R].x * vx, lm[idx.R].y * vy];
-    const chin = [lm[idx.C].x * vx, lm[idx.C].y * vy];
-    return { eyeL, eyeR, chin };
-  }
-
-  // Compute similarity transform and composite the face
-  function placeFaceIntoSlot(src) {
-    const meta = state.meta;
-    const slot = meta.slot;
-    const cvw = els.canvas.width;
-    const cvh = els.canvas.height;
-
-    // Target anchors (in canvas/output space)
-    const dstL = slot.eye_left;
-    const dstR = slot.eye_right;
-    const dstC = slot.chin;
-
-    // Compute transforms based on eye vector
-    const sdx = src.eyeR[0] - src.eyeL[0];
-    const sdy = src.eyeR[1] - src.eyeL[1];
-    const ddx = dstR[0] - dstL[0];
-    const ddy = dstR[1] - dstL[1];
-
-    const sAngle = Math.atan2(sdy, sdx);
-    const dAngle = Math.atan2(ddy, ddx);
-    const angle = dAngle - sAngle;
-
-    const sDist = Math.hypot(sdx, sdy);
-    const dDist = Math.hypot(ddx, ddy);
-    const scale = dDist / (sDist || 1);
-
-    // Compute centers
-    const sMid = [(src.eyeL[0] + src.eyeR[0]) / 2, (src.eyeL[1] + src.eyeR[1]) / 2];
-    const dMid = [(dstL[0] + dstR[0]) / 2, (dstL[1] + dstR[1]) / 2];
-
-    // ROI box around source face (eye center to chin)
-    const eyeToChin = Math.hypot(src.chin[0] - sMid[0], src.chin[1] - sMid[1]);
-    const roiSize = Math.max(1, eyeToChin * (state.meta.slot.roi_scale || 1.5));
-
-    // Offscreen buffer: grab face ROI from video
-    const off = document.createElement('canvas');
-    const offCtx = off.getContext('2d');
-    off.width = roiSize * 2;
-    off.height = roiSize * 2;
-
-    // Source rect in video coords
-    const sx = sMid[0] - roiSize;
-    const sy = sMid[1] - roiSize;
-    offCtx.drawImage(els.video, sx, sy, roiSize * 2, roiSize * 2, 0, 0, off.width, off.height);
-
-    // Place the ROI onto preview canvas with rotation + scaling
-    ctx.save();
-
-    // Destination transform: translate to target midpoint, rotate, scale, then center the ROI
-    ctx.translate(dMid[0], dMid[1]);
-    ctx.rotate(angle);
-    ctx.scale(scale, scale);
-    ctx.translate(-off.width / 2, -off.height / 2);
-
-    // Draw the face ROI
-    ctx.drawImage(off, 0, 0);
-
-    // Soft mask
-    if (maskImg.complete) {
-      ctx.globalCompositeOperation = 'destination-in';
-      // Scale mask to match ROI size (already scaled by ctx.scale)
-      ctx.drawImage(maskImg, 0, 0, off.width, off.height);
-      ctx.globalCompositeOperation = 'source-over';
-    }
-
-    ctx.restore();
-  }
-
-  // Export current canvas to PNG
-  async function exportPNG() {
-    return new Promise((resolve) => {
-      els.canvas.toBlob((blob) => resolve(blob), 'image/png', 0.92);
-    });
-  }
-
-  // FaceMesh init
-  async function initFaceMesh() {
-    return new Promise((resolve) => {
-      const fm = new FaceMesh({
-        locateFile: (file) =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
-      });
-      fm.setOptions({
-        maxNumFaces: 1,
-        refineLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-      fm.onResults((results) => {
-        state.lastResults = results;
-        if (state.running) drawComposite(results);
-      });
-      state.faceMesh = fm;
-      resolve();
-    });
-  }
-
-  // Start camera using MediaPipe Camera helper if available; fallback to getUserMedia
-  async function startCamera() {
-    // Prepare canvas size to meta.preview or image_size fallback
-    const w = (state.meta.preview && state.meta.preview.width) || 720;
-    const h = (state.meta.preview && state.meta.preview.height) || 960;
-    els.canvas.width = w;
-    els.canvas.height = h;
-
-    // Ensure assets are ready
-    await Promise.all([
-      waitImage(baseImg),
-      waitImage(maskImg),
-    ]);
-
-    // Use Camera helper if present (global)
-    if (typeof Camera !== 'undefined') {
-      state.camera = new Camera(els.video, {
-        onFrame: async () => {
-          await state.faceMesh.send({ image: els.video });
-        },
-        width: 640,
-        height: 480,
-        facingMode: 'user',
-      });
-      await state.camera.start();
-    } else {
-      // Fallback to plain getUserMedia
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: 'user' },
-        audio: false,
-      });
-      els.video.srcObject = stream;
-      await els.video.play();
-
-      // Manual frame loop
-      const loop = async () => {
-        if (!state.running) return;
-        await state.faceMesh.send({ image: els.video });
-        requestAnimationFrame(loop);
-      };
-      requestAnimationFrame(loop);
-    }
   }
 
   function waitImage(img) {
@@ -220,21 +77,174 @@
     });
   }
 
-  // UI wiring
+  async function exportPNG() {
+    return new Promise((resolve) => {
+      els.canvas.toBlob((blob) => resolve(blob), 'image/png', 0.92);
+    });
+  }
+
+  // --- FaceMesh --------------------------------------------------------------
+  async function initFaceMesh() {
+    return new Promise((resolve) => {
+      const fm = new FaceMesh({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+      });
+      fm.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+      fm.onResults((results) => {
+        if (!state.running) return;
+        drawComposite(results);
+      });
+      state.faceMesh = fm;
+      resolve();
+    });
+  }
+
+  function pickKeypoints(lm, vw, vh) {
+    // FaceMesh landmark indices
+    const L = 33, R = 263, C = 152; // left eye outer, right eye outer, chin approx
+    const eyeL = [lm[L].x * vw, lm[L].y * vh];
+    const eyeR = [lm[R].x * vw, lm[R].y * vh];
+    const chin = [lm[C].x * vw, lm[C].y * vh];
+    return { eyeL, eyeR, chin };
+  }
+
+  function drawComposite(results) {
+    const { multiFaceLandmarks } = results || {};
+    // Clear and draw character base
+    ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+    ctx.drawImage(baseImg, 0, 0, els.canvas.width, els.canvas.height);
+
+    if (!multiFaceLandmarks || multiFaceLandmarks.length === 0) return;
+
+    const lm = multiFaceLandmarks[0];
+    const vw = els.video.videoWidth || 640;
+    const vh = els.video.videoHeight || 480;
+    const pts = pickKeypoints(lm, vw, vh);
+    placeFaceIntoSlot(pts);
+  }
+
+  function placeFaceIntoSlot(src) {
+    const { slot } = state.meta;
+    const dstL = slot.eye_left;
+    const dstR = slot.eye_right;
+
+    // Angles & scale based on eye vector
+    const sdx = src.eyeR[0] - src.eyeL[0];
+    const sdy = src.eyeR[1] - src.eyeL[1];
+    const ddx = dstR[0] - dstL[0];
+    const ddy = dstR[1] - dstL[1];
+
+    const sAngle = Math.atan2(sdy, sdx);
+    const dAngle = Math.atan2(ddy, ddx);
+    const angle = dAngle - sAngle;
+
+    const sDist = Math.hypot(sdx, sdy) || 1;
+    const dDist = Math.hypot(ddx, ddy) || 1;
+    const scale = dDist / sDist;
+
+    // Centers (source mid between eyes; destination mid between anchors)
+    const sMid = [(src.eyeL[0] + src.eyeR[0]) / 2, (src.eyeL[1] + src.eyeR[1]) / 2];
+    const dMid = [(dstL[0] + dstR[0]) / 2, (dstL[1] + dstR[1]) / 2];
+
+    // ROI size from eyes to chin
+    const eyeToChin = Math.hypot(
+      (state.meta.slot.chin?.[0] ?? dMid[0]) - dMid[0],
+      (state.meta.slot.chin?.[1] ?? (dMid[1] + 80)) - dMid[1]
+    );
+    const roiScale = state.meta.slot.roi_scale || 1.5;
+    const roiSize = Math.max(48, eyeToChin * 2 * roiScale);
+
+    // Grab ROI from the video into an offscreen canvas
+    const off = document.createElement('canvas');
+    const offCtx = off.getContext('2d');
+    off.width = roiSize;
+    off.height = roiSize;
+
+    // Map ROI in video coords: center at sMid
+    const sx = sMid[0] - roiSize / 2;
+    const sy = sMid[1] - roiSize / 2;
+    offCtx.drawImage(els.video, sx, sy, roiSize, roiSize, 0, 0, roiSize, roiSize);
+
+    // Draw ROI into the preview canvas with rotation/scale and soft mask
+    ctx.save();
+    ctx.translate(dMid[0], dMid[1]);
+    ctx.rotate(angle);
+    ctx.scale(scale, scale);
+    ctx.translate(-roiSize / 2, -roiSize / 2);
+
+    ctx.drawImage(off, 0, 0, roiSize, roiSize);
+
+    if (maskImg.complete) {
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.drawImage(maskImg, 0, 0, roiSize, roiSize);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    ctx.restore();
+  }
+
+  // --- Camera start (helper or fallback) -------------------------------------
+  async function startCamera() {
+    await Promise.all([waitImage(baseImg), waitImage(maskImg)]);
+    fitPreviewCanvas();
+
+    // Prefer MediaPipe Camera helper if present
+    if (typeof Camera !== 'undefined') {
+      state.camera = new Camera(els.video, {
+        onFrame: async () => {
+          if (!state.running) return;
+          await state.faceMesh.send({ image: els.video });
+        },
+        width: 640,
+        height: 480,
+        facingMode: 'user',
+      });
+      await state.camera.start();
+      return;
+    }
+
+    // Fallback: plain getUserMedia + RAF loop
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: 'user' },
+      audio: false,
+    });
+    els.video.srcObject = stream;
+    els.video.setAttribute('playsinline', 'true');
+    await els.video.play();
+
+    const loop = async () => {
+      if (!state.running) return;
+      await state.faceMesh.send({ image: els.video });
+      (els.video.requestVideoFrameCallback
+        ? els.video.requestVideoFrameCallback(loop)
+        : requestAnimationFrame(loop));
+    };
+    loop();
+  }
+
+  // --- UI wiring -------------------------------------------------------------
   els.startBtn.addEventListener('click', async () => {
     try {
       els.startBtn.disabled = true;
       els.banner.textContent = 'Initializing… grant camera permission if prompted.';
-      // Guard: secure context
+
+      // Secure-context guard
       if (
-        !(location.protocol === 'https:' ||
+        !(
+          location.protocol === 'https:' ||
           location.hostname === 'localhost' ||
-          location.protocol === 'file:')
+          location.protocol === 'file:'
+        )
       ) {
         throw new Error('Page must be served over HTTPS / localhost / file://');
       }
 
-      if (!state.meta) state.meta = await loadMeta(metaUrl);
+      if (!state.meta) state.meta = await loadMeta(META_URL);
       if (!state.faceMesh) await initFaceMesh();
 
       state.running = true;
@@ -250,8 +260,8 @@
     }
   });
 
-  els.captureBtn.addEventListener('click', async () => {
-    // Freeze current composite (do nothing extra: the canvas already shows it)
+  els.captureBtn.addEventListener('click', () => {
+    // Canvas already contains the composite; just enable Save
     els.saveBtn.disabled = false;
     els.banner.textContent = 'Captured. Tap Save to download.';
   });
@@ -261,13 +271,11 @@
       const blob = await exportPNG();
       if (!blob) return;
 
-      if (state.capturedBlob) URL.revokeObjectURL(state.capturedBlob);
-      const url = URL.createObjectURL(blob);
-      state.capturedBlob = url;
+      if (state.capturedUrl) URL.revokeObjectURL(state.capturedUrl);
+      state.capturedUrl = URL.createObjectURL(blob);
 
-      // Trigger download
       const a = document.createElement('a');
-      a.href = url;
+      a.href = state.capturedUrl;
       a.download = 'face-replacement.png';
       document.body.appendChild(a);
       a.click();
@@ -283,17 +291,12 @@
   els.resetBtn.addEventListener('click', () => {
     try {
       state.running = false;
-      // Stop tracks if any
       const stream = els.video.srcObject;
-      if (stream && stream.getTracks) {
-        stream.getTracks().forEach(t => t.stop());
-      }
+      if (stream && stream.getTracks) stream.getTracks().forEach(t => t.stop());
       els.video.srcObject = null;
 
-      // Clear canvas
       ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
 
-      // UI
       els.captureBtn.disabled = true;
       els.saveBtn.disabled = true;
       els.resetBtn.disabled = true;
@@ -304,4 +307,7 @@
       els.banner.textContent = 'Reset failed.';
     }
   });
+
+  // Initial size so first paint is correct
+  fitPreviewCanvas();
 })();
