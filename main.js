@@ -1,5 +1,7 @@
 /* Face Replacement Demo — main.js (globals build)
-   Loads FaceMesh and Camera from <script> tags in index.html
+   Requires in index.html BEFORE this file:
+     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
 */
 
 (() => {
@@ -28,14 +30,13 @@
     capturedUrl: null,
   };
 
-  // ---------- Env detection ----------
-  const isStandalone = window.matchMedia('(display-mode: standalone)').matches
-    || window.navigator.standalone === true;
+  // ---------- Environment ----------
+  const isStandalone =
+    window.matchMedia('(display-mode: standalone)').matches ||
+    window.navigator.standalone === true;
 
   if (els.openInBrowser) {
     els.openInBrowser.addEventListener('click', () => {
-      // Try to open a normal browser tab with the same URL
-      // (iOS will open Safari; on Android, will open default browser)
       window.open(window.location.href, '_blank', 'noopener,noreferrer');
     });
   }
@@ -55,8 +56,11 @@
     els.canvas.height = cssH;
   }
   window.addEventListener('resize', fitPreviewCanvas);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) fitPreviewCanvas(); });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) fitPreviewCanvas();
+  });
 
+  // Scale a meta point (image_size space) to current canvas space
   function scalePt([x, y]) {
     const [iw, ih] = state.meta.image_size;
     const sx = els.canvas.width  / iw;
@@ -89,7 +93,8 @@
   async function initFaceMesh() {
     return new Promise((resolve) => {
       const fm = new FaceMesh({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+        locateFile: (file) =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
       });
       fm.setOptions({
         maxNumFaces: 1,
@@ -107,13 +112,14 @@
   }
 
   function pickKeypoints(lm, vw, vh) {
-    const L = 33, R = 263, C = 152; // eye outer corners + chin
+    const L = 33, R = 263, C = 152; // outer eye corners + chin
     const eyeL = [lm[L].x * vw, lm[L].y * vh];
     const eyeR = [lm[R].x * vw, lm[R].y * vh];
     const chin = [lm[C].x * vw, lm[C].y * vh];
     return { eyeL, eyeR, chin };
   }
 
+  // ---------- Drawing ----------
   function drawSlotGuide() {
     if (!state?.meta) return;
     const dstL = scalePt(state.meta.slot.eye_left);
@@ -150,6 +156,7 @@
     const dstR = scalePt(state.meta.slot.eye_right);
     const dMid = [(dstL[0] + dstR[0]) / 2, (dstL[1] + dstR[1]) / 2];
 
+    // Rotation + scale from eye vectors
     const sdx = src.eyeR[0] - src.eyeL[0];
     const sdy = src.eyeR[1] - src.eyeL[1];
     const ddx = dstR[0] - dstL[0];
@@ -160,17 +167,22 @@
     const dDist = Math.hypot(ddx, ddy) || 1;
     const scale = dDist / sDist;
 
+    // Source ROI around mid-eyes
     const sMid = [(src.eyeL[0] + src.eyeR[0]) / 2, (src.eyeL[1] + src.eyeR[1]) / 2];
     const roiScale = state.meta.slot.roi_scale || 1.5;
     const roiSize = Math.max(64, Math.hypot(sdx, sdy) * roiScale);
 
+    // Extract ROI from video to offscreen
     const off = document.createElement('canvas');
     const offCtx = off.getContext('2d');
-    off.width = roiSize; off.height = roiSize;
+    off.width = roiSize;
+    off.height = roiSize;
+
     const sx = sMid[0] - roiSize / 2;
     const sy = sMid[1] - roiSize / 2;
     offCtx.drawImage(els.video, sx, sy, roiSize, roiSize, 0, 0, roiSize, roiSize);
 
+    // Place ROI onto preview
     ctx.save();
     ctx.translate(dMid[0], dMid[1]);
     ctx.rotate(angle);
@@ -186,16 +198,20 @@
     ctx.restore();
   }
 
-  // ---------- Camera start with robust fallbacks ----------
+  // ---------- Camera start with fallbacks ----------
+  let lastGumError = null;
+
   async function startCamera() {
     await Promise.all([waitImage(baseImg), waitImage(maskImg)]);
     fitPreviewCanvas();
 
-    // Try helper first
+    // Try MediaPipe helper first
     if (typeof Camera !== 'undefined') {
       try {
         state.camera = new Camera(els.video, {
-          onFrame: async () => { if (state.running) await state.faceMesh.send({ image: els.video }); },
+          onFrame: async () => {
+            if (state.running) await state.faceMesh.send({ image: els.video });
+          },
           width: 640,
           height: 480,
           facingMode: 'user',
@@ -203,11 +219,11 @@
         await state.camera.start();
         return true;
       } catch (e) {
-        console.warn('Camera helper failed, falling back:', e);
+        console.warn('Camera helper failed; falling back:', e);
       }
     }
 
-    // Fallback attempts with varying constraints
+    // Fallback attempts
     const attempts = [
       { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
       { video: { facingMode: 'user', width: 640, height: 480 }, audio: false },
@@ -239,8 +255,6 @@
     return false;
   }
 
-  let lastGumError = null;
-
   // ---------- UI ----------
   els.startBtn.addEventListener('click', async () => {
     try {
@@ -248,7 +262,13 @@
       els.banner.textContent = 'Initializing… grant camera permission if prompted.';
 
       // Secure context guard
-      if (!(location.protocol === 'https:' || location.hostname === 'localhost' || location.protocol === 'file:')) {
+      if (
+        !(
+          location.protocol === 'https:' ||
+          location.hostname === 'localhost' ||
+          location.protocol === 'file:'
+        )
+      ) {
         throw new Error('Page must be served over HTTPS / localhost / file://');
       }
 
@@ -263,19 +283,18 @@
       const ok = await startCamera();
 
       if (!ok) {
-        // Show friendly guidance and PWA fallback
         let msg = 'Camera failed to start.';
         if (lastGumError) {
           if (lastGumError.name === 'NotAllowedError') {
-            msg = 'Camera permission blocked. Go to Settings > Safari > Camera (or site settings) and allow.';
+            msg = 'Camera permission blocked. Allow in browser/site settings.';
           } else if (lastGumError.name === 'NotFoundError') {
-            msg = 'No camera found. Check hardware or permissions.';
+            msg = 'No camera found. Check hardware/permissions.';
           } else if (lastGumError.name === 'NotReadableError') {
-            msg = 'Camera is in use by another app.';
+            msg = 'Camera in use by another app.';
           }
         }
         els.banner.textContent = msg;
-        if (isStandalone) els.fallback.style.display = 'block';
+        if (isStandalone && els.fallback) els.fallback.style.display = 'block';
         els.startBtn.disabled = false;
         state.running = false;
         return;
@@ -286,4 +305,60 @@
       els.banner.textContent = 'Align your face with the guide area.';
     } catch (err) {
       console.error(err);
-      els.ban
+      els.banner.textContent = 'Error: ' + err.message;
+      els.startBtn.disabled = false;
+      state.running = false;
+      if (isStandalone && els.fallback) els.fallback.style.display = 'block';
+    }
+  });
+
+  els.captureBtn.addEventListener('click', () => {
+    els.saveBtn.disabled = false;
+    els.banner.textContent = 'Captured. Tap Save to download.';
+  });
+
+  els.saveBtn.addEventListener('click', async () => {
+    try {
+      const blob = await exportPNG();
+      if (!blob) return;
+      if (state.capturedUrl) URL.revokeObjectURL(state.capturedUrl);
+      state.capturedUrl = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = state.capturedUrl;
+      a.download = 'face-replacement.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      els.banner.textContent = 'Saved PNG.';
+    } catch (e) {
+      console.error(e);
+      els.banner.textContent = 'Save failed.';
+    }
+  });
+
+  els.resetBtn.addEventListener('click', () => {
+    try {
+      state.running = false;
+      const stream = els.video.srcObject;
+      if (stream && stream.getTracks) stream.getTracks().forEach((t) => t.stop());
+      els.video.srcObject = null;
+
+      ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+
+      els.captureBtn.disabled = true;
+      els.saveBtn.disabled = true;
+      els.resetBtn.disabled = true;
+      els.startBtn.disabled = false;
+      els.banner.textContent = 'Reset. Tap Start Camera to begin again.';
+      if (els.fallback) els.fallback.style.display = 'none';
+    } catch (e) {
+      console.error(e);
+      els.banner.textContent = 'Reset failed.';
+    }
+  });
+
+  // Initial size for correct first paint
+  fitPreviewCanvas();
+})();
