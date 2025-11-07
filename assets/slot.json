@@ -1,9 +1,12 @@
 {
   "slot": {
-    "eye_left": [150, 120],
-    "eye_right": [250, 120],
-    "chin": [200, 200],
-    "roi_scale": 1.5
+    "eye_left":  [270, 192],
+    "eye_right": [450, 192],
+    "chin":      [360, 320],
+    "roi_scale": 1.5,
+    "roi_pad":   0
   },
-  "image_size": [400, 600]
+  "image_size": [720, 960],
+  "preview": { "width": 720, "height": 960 },
+  "export":  { "width": 1200, "height": 1600 }
 }
