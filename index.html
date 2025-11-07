@@ -2,19 +2,25 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport"
-        content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+  />
   <title>Face Replacement Demo</title>
 
+  <!-- PWA (optional) -->
   <link rel="manifest" href="./manifest.webmanifest" />
   <meta name="theme-color" content="#000000" />
+
+  <!-- Styles -->
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <div id="app">
-    <div id="banner">Align your face with the guide area.</div>
+    <div id="banner">Tap Start and allow camera access.</div>
 
     <div id="stage">
+      <!-- keep video in DOM; hidden is OK -->
       <video id="cam" autoplay muted playsinline hidden></video>
       <canvas id="preview" width="720" height="960"></canvas>
     </div>
@@ -25,13 +31,30 @@
       <button id="saveBtn" class="secondary" disabled>Save</button>
       <button id="resetBtn" class="secondary" disabled>Reset</button>
     </div>
+
+    <!-- Shown only if we detect standalone/PWA camera issues -->
+    <div id="fallback" style="display:none; padding:.75rem; text-align:center;">
+      Having trouble? <button id="openInBrowser" style="
+        padding:.6rem .9rem;border:0;border-radius:.6rem;background:#1e88e5;color:#fff;font-weight:700;">
+        Open in Browser
+      </button>
+      <div style="opacity:.75;font-size:.9rem;margin-top:.5rem">
+        PWAs on some iOS versions block camera; Safari tab usually works.
+      </div>
+    </div>
   </div>
 
-  <!-- MediaPipe globals (must be before main.js) -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <!-- MediaPipe globals (must load BEFORE main.js) -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"
+    crossorigin="anonymous"
+  ></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"
+    crossorigin="anonymous"
+  ></script>
 
-  <!-- App -->
+  <!-- App logic -->
   <script src="./main.js"></script>
 </body>
 </html>
