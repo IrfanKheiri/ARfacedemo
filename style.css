@@ -1,8 +1,8 @@
 /* Mobile-first, fill screen, keep controls visible */
 
 :root {
-  --footer-h: 78px;            /* footer height */
-  --banner-h: 32px;            /* top banner height */
+  --footer-h: 78px;   /* footer height */
+  --banner-h: 32px;   /* top banner height */
 }
 
 html, body {
@@ -32,7 +32,6 @@ html, body {
 }
 
 #stage {
-  /* Fill everything between banner and footer */
   height: calc(100vh - var(--banner-h) - var(--footer-h));
   display: grid;
   place-items: center;
@@ -40,7 +39,7 @@ html, body {
   box-sizing: border-box;
 }
 
-/* The canvas should scale to width and keep its aspect ratio */
+/* Canvas scales to width; bitmap size handled in JS */
 #preview {
   width: 100vw;
   height: auto;
@@ -49,21 +48,16 @@ html, body {
   border-radius: 10px;
 }
 
-/* Fixed footer always visible */
+/* Fixed footer */
 #controls {
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 0; right: 0; bottom: 0;
   height: var(--footer-h);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: .5rem;
+  display: flex; gap: .5rem;
+  align-items: center; justify-content: center;
   padding: .5rem .75rem;
   background: rgba(0,0,0,.9);
   backdrop-filter: blur(4px);
-  /* Safe-area for iOS home indicator */
   padding-bottom: calc(.5rem + env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
@@ -73,17 +67,13 @@ button {
   min-width: 0;
   max-width: 180px;
   padding: .85rem .9rem;
-  border: 0;
-  border-radius: 12px;
-  background: #1e88e5;
-  color: #fff;
-  font-weight: 700;
-  font-size: .95rem;
+  border: 0; border-radius: 12px;
+  background: #1e88e5; color: #fff;
+  font-weight: 700; font-size: .95rem;
 }
 
 button.secondary { background: #424242; }
 
-/* Small phones: stack buttons to two rows */
 @media (max-width: 380px) {
   #controls { flex-wrap: wrap; height: auto; }
   :root { --footer-h: 110px; }
