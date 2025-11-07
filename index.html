@@ -2,22 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
-  />
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Face Replacement Demo</title>
 
-  <!-- (Optional PWA) -->
   <link rel="manifest" href="./manifest.webmanifest" />
   <meta name="theme-color" content="#000000" />
-
-  <!-- Styles -->
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <div id="app">
-    <div id="banner">Run over HTTPS and allow camera access</div>
+    <div id="banner">Align your face with the guide area.</div>
 
     <div id="stage">
       <video id="cam" autoplay muted playsinline hidden></video>
@@ -32,17 +27,11 @@
     </div>
   </div>
 
-  <!-- MediaPipe globals (must load BEFORE main.js) -->
-  <script
-    src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"
-    crossorigin="anonymous"
-  ></script>
-  <script
-    src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"
-    crossorigin="anonymous"
-  ></script>
+  <!-- MediaPipe globals (must be before main.js) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
 
-  <!-- Your app logic -->
+  <!-- App -->
   <script src="./main.js"></script>
 </body>
 </html>
