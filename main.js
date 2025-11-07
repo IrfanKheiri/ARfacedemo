@@ -1,220 +1,307 @@
-/*
-  main.js
-
-  This module orchestrates the face replacement demo. It requests
-  camera access, runs MediaPipe FaceMesh on each frame, computes
-  alignment between the detected face and a predefined slot on the
-  character image, and composites the result in a canvas. It also
-  allows the user to capture the current composite and download
-  it as a PNG. The implementation stays entirely on-device and
-  does not send any image data to a server.
-
-  Note: this demo relies on external scripts hosted via jsDelivr
-  to load the MediaPipe FaceMesh and Camera utilities. These URLs
-  are versioned and can be updated if newer releases are desired.
+/* Face Replacement Demo (globals build)
+   - Uses MediaPipe FaceMesh and Camera Utils loaded via <script> tags in index.html
+   - No ES module imports here.
 */
 
-// Import MediaPipe modules. We use dynamic imports to fetch
-// the face mesh and camera utilities from a CDN. These modules
-// expose global constructors that we can instantiate.
-import { FaceMesh } from 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js';
-import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
-
-// Grab DOM elements. The video element shows the live camera
-// stream; the preview canvas shows the composite of the character
-// and the detected face. Control buttons handle camera start,
-// capture and saving.
-const video = document.getElementById('video');
-const canvas = document.getElementById('preview');
-const ctx = canvas.getContext('2d');
-const startBtn = document.getElementById('start-btn');
-const captureBtn = document.getElementById('capture-btn');
-const saveBtn = document.getElementById('save-btn');
-
-// Load asset metadata. The slot JSON describes where the eyes
-// and chin of the face should be positioned relative to the
-// character image. We fetch it once at load time.
-const slotData = await fetch('./assets/slot.json').then(res => res.json());
-
-// Load the character and mask images. These images are used to
-// composite the face into the character art. The mask defines
-// the region of the face to keep when drawing over the character.
-const characterImg = new Image();
-characterImg.src = './assets/character_base.png';
-const maskImg = new Image();
-maskImg.src = './assets/mask_oval.png';
-await Promise.all([characterImg.decode(), maskImg.decode()]);
-
-// Initialise the MediaPipe FaceMesh solution. We specify a locateFile
-// function so that the dependent WASM files can be resolved from
-// the same CDN. The options set maxNumFaces to 1 (we only care
-// about a single face) and refineLandmarks to true to get more
-// accurate eyes and lips.
-const faceMesh = new FaceMesh({
-  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
-});
-faceMesh.setOptions({
-  maxNumFaces: 1,
-  refineLandmarks: true,
-  selfieMode: true
-});
-
-let latestResults = null;
-let camera = null;
-
-faceMesh.onResults(results => {
-  latestResults = results;
-  drawPreview();
-});
-
-// Handle camera start. When the user taps the Start button, we
-// request the camera and begin sending frames to FaceMesh. On
-// some browsers (especially mobile Safari) the camera will not
-// start until a user gesture has occurred.
-startBtn.addEventListener('click', async () => {
-  startBtn.disabled = true;
-  captureBtn.disabled = false;
-  // Initialise camera using MediaPipe camera utils. We specify
-  // desired dimensions; the utilities handle aspect ratio.
-  camera = new Camera(video, {
-    onFrame: async () => {
-      if (faceMesh) {
-        await faceMesh.send({ image: video });
-      }
-    },
-    width: 640,
-    height: 480
-  });
-  await camera.start();
-});
-
-// Compute the similarity transform that maps the user’s face onto
-// the character slot. We use three landmarks: the outer corners
-// of the eyes (indices 33 and 263) and the chin tip (index 152).
-// These indices come from the MediaPipe FaceMesh landmark map.
-function computeTransform(landmarks) {
-  // Source landmarks in the video frame (normalized coordinates)
-  const leftEye = landmarks[33];
-  const rightEye = landmarks[263];
-  const chin = landmarks[152];
-  // Compute distances between key points
-  const dx = rightEye.x - leftEye.x;
-  const dy = rightEye.y - leftEye.y;
-  const eyeDist = Math.hypot(dx, dy);
-  // Midpoint between the eyes
-  const eyeMid = { x: (leftEye.x + rightEye.x) / 2, y: (leftEye.y + rightEye.y) / 2 };
-  // Target positions in the character image (normalized to [0,1])
-  const slot = slotData.slot;
-  const imgW = slotData.image_size[0];
-  const imgH = slotData.image_size[1];
-  const targetEyeLeft = { x: slot.eye_left[0] / imgW, y: slot.eye_left[1] / imgH };
-  const targetEyeRight = { x: slot.eye_right[0] / imgW, y: slot.eye_right[1] / imgH };
-  const targetChin = { x: slot.chin[0] / imgW, y: slot.chin[1] / imgH };
-  const tDx = targetEyeRight.x - targetEyeLeft.x;
-  const tDy = targetEyeRight.y - targetEyeLeft.y;
-  const targetEyeDist = Math.hypot(tDx, tDy);
-  // Scale factor: ratio of target eye distance to detected eye distance
-  // Multiply by canvas dimensions because our video and canvas units differ
-  const scale = (targetEyeDist * canvas.width) / (eyeDist * video.videoWidth);
-  // Rotation: difference in angles between eye lines
-  const sourceAngle = Math.atan2(dy, dx);
-  const targetAngle = Math.atan2(tDy * canvas.height, tDx * canvas.width);
-  const rotation = targetAngle - sourceAngle;
-  // Compute target midpoint in canvas coordinates
-  const targetEyeMidX = ((slot.eye_left[0] + slot.eye_right[0]) / 2) / imgW * canvas.width;
-  const targetEyeMidY = ((slot.eye_left[1] + slot.eye_right[1]) / 2) / imgH * canvas.height;
-  // Current eye midpoint in video pixel coordinates
-  const currentX = eyeMid.x * video.videoWidth;
-  const currentY = eyeMid.y * video.videoHeight;
-  // Translation needed to move the scaled/rotated face to the slot
-  const tx = targetEyeMidX - (currentX * scale);
-  const ty = targetEyeMidY - (currentY * scale);
-  // Mask dimensions and position relative to the slot; this determines
-  // how much of the face is visible when compositing. ROI scale
-  // expands the mask beyond the eye distance to include cheeks and chin.
-  const roiW = slot.roi_scale * (slot.eye_right[0] - slot.eye_left[0]) / imgW * canvas.width;
-  const roiH = slot.roi_scale * (slot.chin[1] - slot.eye_left[1]) / imgH * canvas.height;
-  const maskX = targetEyeMidX - roiW / 2;
-  const maskY = targetEyeMidY - (slot.eye_left[1] / imgH * canvas.height);
-  return {
-    scale, rotation, tx, ty,
-    maskX, maskY, maskW: roiW, maskH: roiH,
-    cx: eyeMid.x * video.videoWidth,
-    cy: eyeMid.y * video.videoHeight
+(() => {
+  const els = {
+    video: document.getElementById('cam'),
+    canvas: document.getElementById('preview'),
+    startBtn: document.getElementById('startBtn'),
+    captureBtn: document.getElementById('captureBtn'),
+    saveBtn: document.getElementById('saveBtn'),
+    resetBtn: document.getElementById('resetBtn'),
+    banner: document.getElementById('banner'),
   };
-}
 
-// Draw the live preview. This function composes the character
-// image and the user’s face in real time. It reads the latest
-// FaceMesh results, computes the transform, and uses an
-// offscreen canvas to apply the mask before drawing onto the
-// visible preview canvas.
-function drawPreview() {
-  const width = video.videoWidth;
-  const height = video.videoHeight;
-  if (!width || !height) return;
-  // Resize the preview canvas to match the video aspect ratio
-  canvas.width = width;
-  canvas.height = height;
-  ctx.clearRect(0, 0, width, height);
-  // Draw the character base as the background
-  ctx.drawImage(characterImg, 0, 0, width, height);
-  // No face detected? exit early
-  if (!latestResults || !latestResults.multiFaceLandmarks || !latestResults.multiFaceLandmarks[0]) {
-    return;
+  const ctx = els.canvas.getContext('2d', { alpha: true });
+
+  // Assets & metadata
+  const metaUrl = './assets/slot.json';
+  const baseImg = new Image();
+  baseImg.src = './assets/character_base.png';
+  const maskImg = new Image();
+  maskImg.src = './assets/mask_oval.png';
+
+  const state = {
+    meta: null,
+    faceMesh: null,
+    camera: null,
+    running: false,
+    lastResults: null,
+    capturedBlob: null,
+  };
+
+  // Utility: load JSON
+  async function loadMeta(url) {
+    const res = await fetch(url, { cache: 'no-cache' });
+    if (!res.ok) throw new Error('Failed to load character metadata');
+    return res.json();
   }
-  const landmarks = latestResults.multiFaceLandmarks[0];
-  const transform = computeTransform(landmarks);
-  // Create an offscreen canvas to draw the transformed face
-  const faceCanvas = document.createElement('canvas');
-  faceCanvas.width = width;
-  faceCanvas.height = height;
-  const fctx = faceCanvas.getContext('2d');
-  // Save context and apply transform: translate, rotate and scale
-  fctx.save();
-  fctx.translate(transform.tx, transform.ty);
-  fctx.rotate(transform.rotation);
-  fctx.scale(transform.scale, transform.scale);
-  // Draw the video frame onto the offscreen canvas. We translate
-  // such that the face’s centre (between the eyes) becomes the
-  // origin for rotation and scaling.
-  fctx.translate(-transform.cx, -transform.cy);
-  fctx.drawImage(video, 0, 0, width, height);
-  fctx.restore();
-  // Apply the mask: destination-in keeps only the masked region
-  fctx.globalCompositeOperation = 'destination-in';
-  fctx.drawImage(maskImg, transform.maskX, transform.maskY, transform.maskW, transform.maskH);
-  // Composite the masked face over the character on the main canvas
-  ctx.drawImage(faceCanvas, 0, 0);
-}
 
-// Capture button handler. When clicked, it freezes the current
-// preview and enables the Save button. The Save button will
-// generate a high‑resolution PNG of the composite.
-captureBtn.addEventListener('click', () => {
-  captureBtn.disabled = true;
-  // Enable save button
-  saveBtn.style.display = 'inline-block';
-  generateOutputImage();
-});
+  // Draw the live composite
+  function drawComposite(results) {
+    const { multiFaceLandmarks } = results || {};
+    // Clear
+    ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+    // Base character layer
+    ctx.drawImage(baseImg, 0, 0, els.canvas.width, els.canvas.height);
 
-// Generate output PNG at a higher resolution (3:4 ratio). We
-// scale the current preview canvas up to 1200×1600 pixels and
-// convert it to a Blob. The resulting object URL is assigned
-// to the Save button’s href so the browser downloads it when
-// clicked.
-function generateOutputImage() {
-  const outW = 1200;
-  const outH = 1600;
-  const outCanvas = document.createElement('canvas');
-  outCanvas.width = outW;
-  outCanvas.height = outH;
-  const octx = outCanvas.getContext('2d');
-  // Draw scaled preview onto output canvas
-  octx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, outW, outH);
-  outCanvas.toBlob(blob => {
-    const url = URL.createObjectURL(blob);
-    saveBtn.href = url;
-    saveBtn.download = 'face_composite.png';
-  }, 'image/png');
-}
+    if (!multiFaceLandmarks || multiFaceLandmarks.length === 0) return;
+
+    const lm = multiFaceLandmarks[0]; // largest face already ensured by FaceMesh
+    const pts = pickKeypoints(lm); // {eyeL:[x,y], eyeR:[x,y], chin:[x,y]} in video space
+
+    // Project / transform the video’s face ROI into the slot coordinates
+    placeFaceIntoSlot(pts);
+  }
+
+  // Pick left/right eye outer corners and chin from FaceMesh landmarks.
+  // Indices (using MediaPipe FaceMesh):
+  // Left eye outer: 33, Right eye outer: 263, Chin tip (approx): 152
+  function pickKeypoints(lm) {
+    // Landmarks are in normalized coordinates [0..1] for x/y
+    const vx = els.video.videoWidth;
+    const vy = els.video.videoHeight;
+
+    const idx = { L: 33, R: 263, C: 152 };
+    const eyeL = [lm[idx.L].x * vx, lm[idx.L].y * vy];
+    const eyeR = [lm[idx.R].x * vx, lm[idx.R].y * vy];
+    const chin = [lm[idx.C].x * vx, lm[idx.C].y * vy];
+    return { eyeL, eyeR, chin };
+  }
+
+  // Compute similarity transform and composite the face
+  function placeFaceIntoSlot(src) {
+    const meta = state.meta;
+    const slot = meta.slot;
+    const cvw = els.canvas.width;
+    const cvh = els.canvas.height;
+
+    // Target anchors (in canvas/output space)
+    const dstL = slot.eye_left;
+    const dstR = slot.eye_right;
+    const dstC = slot.chin;
+
+    // Compute transforms based on eye vector
+    const sdx = src.eyeR[0] - src.eyeL[0];
+    const sdy = src.eyeR[1] - src.eyeL[1];
+    const ddx = dstR[0] - dstL[0];
+    const ddy = dstR[1] - dstL[1];
+
+    const sAngle = Math.atan2(sdy, sdx);
+    const dAngle = Math.atan2(ddy, ddx);
+    const angle = dAngle - sAngle;
+
+    const sDist = Math.hypot(sdx, sdy);
+    const dDist = Math.hypot(ddx, ddy);
+    const scale = dDist / (sDist || 1);
+
+    // Compute centers
+    const sMid = [(src.eyeL[0] + src.eyeR[0]) / 2, (src.eyeL[1] + src.eyeR[1]) / 2];
+    const dMid = [(dstL[0] + dstR[0]) / 2, (dstL[1] + dstR[1]) / 2];
+
+    // ROI box around source face (eye center to chin)
+    const eyeToChin = Math.hypot(src.chin[0] - sMid[0], src.chin[1] - sMid[1]);
+    const roiSize = Math.max(1, eyeToChin * (state.meta.slot.roi_scale || 1.5));
+
+    // Offscreen buffer: grab face ROI from video
+    const off = document.createElement('canvas');
+    const offCtx = off.getContext('2d');
+    off.width = roiSize * 2;
+    off.height = roiSize * 2;
+
+    // Source rect in video coords
+    const sx = sMid[0] - roiSize;
+    const sy = sMid[1] - roiSize;
+    offCtx.drawImage(els.video, sx, sy, roiSize * 2, roiSize * 2, 0, 0, off.width, off.height);
+
+    // Place the ROI onto preview canvas with rotation + scaling
+    ctx.save();
+
+    // Destination transform: translate to target midpoint, rotate, scale, then center the ROI
+    ctx.translate(dMid[0], dMid[1]);
+    ctx.rotate(angle);
+    ctx.scale(scale, scale);
+    ctx.translate(-off.width / 2, -off.height / 2);
+
+    // Draw the face ROI
+    ctx.drawImage(off, 0, 0);
+
+    // Soft mask
+    if (maskImg.complete) {
+      ctx.globalCompositeOperation = 'destination-in';
+      // Scale mask to match ROI size (already scaled by ctx.scale)
+      ctx.drawImage(maskImg, 0, 0, off.width, off.height);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    ctx.restore();
+  }
+
+  // Export current canvas to PNG
+  async function exportPNG() {
+    return new Promise((resolve) => {
+      els.canvas.toBlob((blob) => resolve(blob), 'image/png', 0.92);
+    });
+  }
+
+  // FaceMesh init
+  async function initFaceMesh() {
+    return new Promise((resolve) => {
+      const fm = new FaceMesh({
+        locateFile: (file) =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+      });
+      fm.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+      fm.onResults((results) => {
+        state.lastResults = results;
+        if (state.running) drawComposite(results);
+      });
+      state.faceMesh = fm;
+      resolve();
+    });
+  }
+
+  // Start camera using MediaPipe Camera helper if available; fallback to getUserMedia
+  async function startCamera() {
+    // Prepare canvas size to meta.preview or image_size fallback
+    const w = (state.meta.preview && state.meta.preview.width) || 720;
+    const h = (state.meta.preview && state.meta.preview.height) || 960;
+    els.canvas.width = w;
+    els.canvas.height = h;
+
+    // Ensure assets are ready
+    await Promise.all([
+      waitImage(baseImg),
+      waitImage(maskImg),
+    ]);
+
+    // Use Camera helper if present (global)
+    if (typeof Camera !== 'undefined') {
+      state.camera = new Camera(els.video, {
+        onFrame: async () => {
+          await state.faceMesh.send({ image: els.video });
+        },
+        width: 640,
+        height: 480,
+        facingMode: 'user',
+      });
+      await state.camera.start();
+    } else {
+      // Fallback to plain getUserMedia
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'user' },
+        audio: false,
+      });
+      els.video.srcObject = stream;
+      await els.video.play();
+
+      // Manual frame loop
+      const loop = async () => {
+        if (!state.running) return;
+        await state.faceMesh.send({ image: els.video });
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    }
+  }
+
+  function waitImage(img) {
+    return new Promise((resolve, reject) => {
+      if (img.complete) return resolve();
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('Image failed to load: ' + img.src));
+    });
+  }
+
+  // UI wiring
+  els.startBtn.addEventListener('click', async () => {
+    try {
+      els.startBtn.disabled = true;
+      els.banner.textContent = 'Initializing… grant camera permission if prompted.';
+      // Guard: secure context
+      if (
+        !(location.protocol === 'https:' ||
+          location.hostname === 'localhost' ||
+          location.protocol === 'file:')
+      ) {
+        throw new Error('Page must be served over HTTPS / localhost / file://');
+      }
+
+      if (!state.meta) state.meta = await loadMeta(metaUrl);
+      if (!state.faceMesh) await initFaceMesh();
+
+      state.running = true;
+      await startCamera();
+
+      els.captureBtn.disabled = false;
+      els.resetBtn.disabled = false;
+      els.banner.textContent = 'Align your face with the guide area.';
+    } catch (err) {
+      console.error(err);
+      els.banner.textContent = 'Error: ' + err.message;
+      els.startBtn.disabled = false;
+    }
+  });
+
+  els.captureBtn.addEventListener('click', async () => {
+    // Freeze current composite (do nothing extra: the canvas already shows it)
+    els.saveBtn.disabled = false;
+    els.banner.textContent = 'Captured. Tap Save to download.';
+  });
+
+  els.saveBtn.addEventListener('click', async () => {
+    try {
+      const blob = await exportPNG();
+      if (!blob) return;
+
+      if (state.capturedBlob) URL.revokeObjectURL(state.capturedBlob);
+      const url = URL.createObjectURL(blob);
+      state.capturedBlob = url;
+
+      // Trigger download
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'face-replacement.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      els.banner.textContent = 'Saved PNG.';
+    } catch (e) {
+      console.error(e);
+      els.banner.textContent = 'Save failed.';
+    }
+  });
+
+  els.resetBtn.addEventListener('click', () => {
+    try {
+      state.running = false;
+      // Stop tracks if any
+      const stream = els.video.srcObject;
+      if (stream && stream.getTracks) {
+        stream.getTracks().forEach(t => t.stop());
+      }
+      els.video.srcObject = null;
+
+      // Clear canvas
+      ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+
+      // UI
+      els.captureBtn.disabled = true;
+      els.saveBtn.disabled = true;
+      els.resetBtn.disabled = true;
+      els.startBtn.disabled = false;
+      els.banner.textContent = 'Reset. Tap Start Camera to begin again.';
+    } catch (e) {
+      console.error(e);
+      els.banner.textContent = 'Reset failed.';
+    }
+  });
+})();
