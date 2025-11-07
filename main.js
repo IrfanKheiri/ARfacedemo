@@ -11,15 +11,14 @@
     saveBtn: document.getElementById('saveBtn'),
     resetBtn: document.getElementById('resetBtn'),
     banner: document.getElementById('banner'),
+    fallback: document.getElementById('fallback'),
+    openInBrowser: document.getElementById('openInBrowser'),
   };
   const ctx = els.canvas.getContext('2d', { alpha: true });
 
-  // Assets & metadata
   const META_URL = './assets/slot.json';
-  const baseImg = new Image();
-  baseImg.src = './assets/character_base.png'; // should be same aspect as meta.preview
-  const maskImg = new Image();
-  maskImg.src = './assets/mask_oval.png';
+  const baseImg = new Image(); baseImg.src = './assets/character_base.png';
+  const maskImg = new Image(); maskImg.src = './assets/mask_oval.png';
 
   const state = {
     meta: null,
@@ -28,6 +27,18 @@
     running: false,
     capturedUrl: null,
   };
+
+  // ---------- Env detection ----------
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+
+  if (els.openInBrowser) {
+    els.openInBrowser.addEventListener('click', () => {
+      // Try to open a normal browser tab with the same URL
+      // (iOS will open Safari; on Android, will open default browser)
+      window.open(window.location.href, '_blank', 'noopener,noreferrer');
+    });
+  }
 
   // ---------- Layout / sizing ----------
   function fitPreviewCanvas() {
@@ -46,7 +57,6 @@
   window.addEventListener('resize', fitPreviewCanvas);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) fitPreviewCanvas(); });
 
-  // Scale a point from meta.image_size space to current canvas space
   function scalePt([x, y]) {
     const [iw, ih] = state.meta.image_size;
     const sx = els.canvas.width  / iw;
@@ -97,15 +107,13 @@
   }
 
   function pickKeypoints(lm, vw, vh) {
-    // FaceMesh landmark indices
-    const L = 33, R = 263, C = 152; // left eye outer, right eye outer, chin approx
+    const L = 33, R = 263, C = 152; // eye outer corners + chin
     const eyeL = [lm[L].x * vw, lm[L].y * vh];
     const eyeR = [lm[R].x * vw, lm[R].y * vh];
     const chin = [lm[C].x * vw, lm[C].y * vh];
     return { eyeL, eyeR, chin };
   }
 
-  // ---------- Drawing ----------
   function drawSlotGuide() {
     if (!state?.meta) return;
     const dstL = scalePt(state.meta.slot.eye_left);
@@ -113,7 +121,7 @@
     const midX = (dstL[0] + dstR[0]) / 2;
     const midY = (dstL[1] + dstR[1]) / 2;
 
-    const rx = Math.hypot(dstR[0] - dstL[0], dstR[1] - dstL[1]) * 0.75; // ellipse radii
+    const rx = Math.hypot(dstR[0] - dstL[0], dstR[1] - dstL[1]) * 0.75;
     const ry = rx * 1.2;
 
     ctx.save();
@@ -128,58 +136,41 @@
 
   function drawComposite(results) {
     const { multiFaceLandmarks } = results || {};
-
-    // Clear and draw character base
     ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
-    if (baseImg.complete) {
-      ctx.drawImage(baseImg, 0, 0, els.canvas.width, els.canvas.height);
-    }
-
-    // Guide
+    if (baseImg.complete) ctx.drawImage(baseImg, 0, 0, els.canvas.width, els.canvas.height);
     drawSlotGuide();
-
     if (!multiFaceLandmarks || multiFaceLandmarks.length === 0) return;
 
     const lm = multiFaceLandmarks[0];
     const vw = els.video.videoWidth  || 640;
     const vh = els.video.videoHeight || 480;
-
     const src = pickKeypoints(lm, vw, vh);
 
-    // Destination anchors in canvas space
     const dstL = scalePt(state.meta.slot.eye_left);
     const dstR = scalePt(state.meta.slot.eye_right);
     const dMid = [(dstL[0] + dstR[0]) / 2, (dstL[1] + dstR[1]) / 2];
 
-    // Source eye vector
     const sdx = src.eyeR[0] - src.eyeL[0];
     const sdy = src.eyeR[1] - src.eyeL[1];
-
-    // Destination eye vector
     const ddx = dstR[0] - dstL[0];
     const ddy = dstR[1] - dstL[1];
 
-    // Rotation and scale
     const angle = Math.atan2(ddy, ddx) - Math.atan2(sdy, sdx);
     const sDist = Math.hypot(sdx, sdy) || 1;
     const dDist = Math.hypot(ddx, ddy) || 1;
     const scale = dDist / sDist;
 
-    // Source ROI around mid-eyes
     const sMid = [(src.eyeL[0] + src.eyeR[0]) / 2, (src.eyeL[1] + src.eyeR[1]) / 2];
     const roiScale = state.meta.slot.roi_scale || 1.5;
-    const roiSize = Math.max(64, (Math.hypot(sdx, sdy) * roiScale));
+    const roiSize = Math.max(64, Math.hypot(sdx, sdy) * roiScale);
 
     const off = document.createElement('canvas');
     const offCtx = off.getContext('2d');
-    off.width = roiSize;
-    off.height = roiSize;
-
+    off.width = roiSize; off.height = roiSize;
     const sx = sMid[0] - roiSize / 2;
     const sy = sMid[1] - roiSize / 2;
     offCtx.drawImage(els.video, sx, sy, roiSize, roiSize, 0, 0, roiSize, roiSize);
 
-    // Place ROI onto preview at destination
     ctx.save();
     ctx.translate(dMid[0], dMid[1]);
     ctx.rotate(angle);
@@ -195,39 +186,60 @@
     ctx.restore();
   }
 
-  // ---------- Camera start ----------
+  // ---------- Camera start with robust fallbacks ----------
   async function startCamera() {
     await Promise.all([waitImage(baseImg), waitImage(maskImg)]);
     fitPreviewCanvas();
 
+    // Try helper first
     if (typeof Camera !== 'undefined') {
-      state.camera = new Camera(els.video, {
-        onFrame: async () => { if (state.running) await state.faceMesh.send({ image: els.video }); },
-        width: 640,
-        height: 480,
-        facingMode: 'user',
-      });
-      await state.camera.start();
-      return;
+      try {
+        state.camera = new Camera(els.video, {
+          onFrame: async () => { if (state.running) await state.faceMesh.send({ image: els.video }); },
+          width: 640,
+          height: 480,
+          facingMode: 'user',
+        });
+        await state.camera.start();
+        return true;
+      } catch (e) {
+        console.warn('Camera helper failed, falling back:', e);
+      }
     }
 
-    // Fallback
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480, facingMode: 'user' }, audio: false
-    });
-    els.video.srcObject = stream;
-    els.video.setAttribute('playsinline', 'true');
-    await els.video.play();
+    // Fallback attempts with varying constraints
+    const attempts = [
+      { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+      { video: { facingMode: 'user', width: 640, height: 480 }, audio: false },
+      { video: true, audio: false },
+    ];
 
-    const loop = async () => {
-      if (!state.running) return;
-      await state.faceMesh.send({ image: els.video });
-      (els.video.requestVideoFrameCallback
-        ? els.video.requestVideoFrameCallback(loop)
-        : requestAnimationFrame(loop));
-    };
-    loop();
+    for (const constraints of attempts) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        els.video.srcObject = stream;
+        els.video.setAttribute('playsinline', 'true');
+        await els.video.play();
+
+        const loop = async () => {
+          if (!state.running) return;
+          await state.faceMesh.send({ image: els.video });
+          (els.video.requestVideoFrameCallback
+            ? els.video.requestVideoFrameCallback(loop)
+            : requestAnimationFrame(loop));
+        };
+        loop();
+        return true;
+      } catch (err) {
+        console.warn('getUserMedia failed with', constraints, err);
+        lastGumError = err;
+      }
+    }
+
+    return false;
   }
+
+  let lastGumError = null;
 
   // ---------- UI ----------
   els.startBtn.addEventListener('click', async () => {
@@ -235,41 +247,43 @@
       els.startBtn.disabled = true;
       els.banner.textContent = 'Initializing… grant camera permission if prompted.';
 
-      // Secure-context guard
+      // Secure context guard
       if (!(location.protocol === 'https:' || location.hostname === 'localhost' || location.protocol === 'file:')) {
         throw new Error('Page must be served over HTTPS / localhost / file://');
+      }
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Camera API not available in this browser.');
       }
 
       if (!state.meta) state.meta = await loadMeta(META_URL);
       if (!state.faceMesh) await initFaceMesh();
 
       state.running = true;
-      await startCamera();
+      const ok = await startCamera();
+
+      if (!ok) {
+        // Show friendly guidance and PWA fallback
+        let msg = 'Camera failed to start.';
+        if (lastGumError) {
+          if (lastGumError.name === 'NotAllowedError') {
+            msg = 'Camera permission blocked. Go to Settings > Safari > Camera (or site settings) and allow.';
+          } else if (lastGumError.name === 'NotFoundError') {
+            msg = 'No camera found. Check hardware or permissions.';
+          } else if (lastGumError.name === 'NotReadableError') {
+            msg = 'Camera is in use by another app.';
+          }
+        }
+        els.banner.textContent = msg;
+        if (isStandalone) els.fallback.style.display = 'block';
+        els.startBtn.disabled = false;
+        state.running = false;
+        return;
+      }
 
       els.captureBtn.disabled = false;
       els.resetBtn.disabled = false;
       els.banner.textContent = 'Align your face with the guide area.';
     } catch (err) {
       console.error(err);
-      els.banner.textContent = 'Error: ' + err.message;
-      els.startBtn.disabled = false;
-    }
-  });
-
-  els.captureBtn.addEventListener('click', () => {
-    els.saveBtn.disabled = false;
-    els.banner.textContent = 'Captured. Tap Save to download.';
-  });
-
-  els.saveBtn.addEventListener('click', async () => {
-    try {
-      const blob = await exportPNG();
-      if (!blob) return;
-
-      if (state.capturedUrl) URL.revokeObjectURL(state.capturedUrl);
-      state.capturedUrl = URL.createObjectURL(blob);
-
-      const a = document.createElement('a');
-      a.href = state.capturedUrl;
-      a.download = 'face-replacement.png';
-      document.body.appendChild(a);
+      els.ban
