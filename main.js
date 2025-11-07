@@ -1,7 +1,5 @@
 /* Face Replacement Demo — main.js (globals build)
-   Requires these in index.html BEFORE this file:
-     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+   Loads FaceMesh and Camera from <script> tags in index.html
 */
 
 (() => {
@@ -19,7 +17,7 @@
   // Assets & metadata
   const META_URL = './assets/slot.json';
   const baseImg = new Image();
-  baseImg.src = './assets/character_base.png';
+  baseImg.src = './assets/character_base.png'; // should be same aspect as meta.preview
   const maskImg = new Image();
   maskImg.src = './assets/mask_oval.png';
 
@@ -31,38 +29,32 @@
     capturedUrl: null,
   };
 
-  // --- Layout / sizing -------------------------------------------------------
+  // ---------- Layout / sizing ----------
   function fitPreviewCanvas() {
-    // Width: full viewport (cap desktop width)
     const cssW = Math.min(window.innerWidth, 1024);
-
-    // Aspect from meta.preview if available, else 3:4
-    const aspect =
-      state?.meta?.preview
-        ? state.meta.preview.height / state.meta.preview.width
-        : (960 / 720);
-
-    // Subtract banner (~32px), footer (~78px), padding (~16px)
-    const maxH = Math.max(
-      200,
-      window.innerHeight - 32 - 78 - 16
-    );
+    const aspect = state?.meta?.preview
+      ? state.meta.preview.height / state.meta.preview.width
+      : (960 / 720);
+    const maxH = Math.max(200, window.innerHeight - 32 - 78 - 16);
     const cssH = Math.min(Math.round(cssW * aspect), maxH);
 
-    // CSS size
     els.canvas.style.width = cssW + 'px';
     els.canvas.style.height = 'auto';
-
-    // Internal bitmap size (for crisp rendering)
-    els.canvas.width = cssW;
+    els.canvas.width  = cssW;
     els.canvas.height = cssH;
   }
   window.addEventListener('resize', fitPreviewCanvas);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) fitPreviewCanvas();
-  });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) fitPreviewCanvas(); });
 
-  // --- Helpers ---------------------------------------------------------------
+  // Scale a point from meta.image_size space to current canvas space
+  function scalePt([x, y]) {
+    const [iw, ih] = state.meta.image_size;
+    const sx = els.canvas.width  / iw;
+    const sy = els.canvas.height / ih;
+    return [x * sx, y * sy];
+  }
+
+  // ---------- Helpers ----------
   async function loadMeta(url) {
     const res = await fetch(url, { cache: 'no-cache' });
     if (!res.ok) throw new Error('Failed to load character metadata');
@@ -83,7 +75,7 @@
     });
   }
 
-  // --- FaceMesh --------------------------------------------------------------
+  // ---------- FaceMesh ----------
   async function initFaceMesh() {
     return new Promise((resolve) => {
       const fm = new FaceMesh({
@@ -113,70 +105,86 @@
     return { eyeL, eyeR, chin };
   }
 
+  // ---------- Drawing ----------
+  function drawSlotGuide() {
+    if (!state?.meta) return;
+    const dstL = scalePt(state.meta.slot.eye_left);
+    const dstR = scalePt(state.meta.slot.eye_right);
+    const midX = (dstL[0] + dstR[0]) / 2;
+    const midY = (dstL[1] + dstR[1]) / 2;
+
+    const rx = Math.hypot(dstR[0] - dstL[0], dstR[1] - dstL[1]) * 0.75; // ellipse radii
+    const ry = rx * 1.2;
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.setLineDash([6, 6]);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(midX, midY + ry * 0.1, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   function drawComposite(results) {
     const { multiFaceLandmarks } = results || {};
+
     // Clear and draw character base
     ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
-    ctx.drawImage(baseImg, 0, 0, els.canvas.width, els.canvas.height);
+    if (baseImg.complete) {
+      ctx.drawImage(baseImg, 0, 0, els.canvas.width, els.canvas.height);
+    }
+
+    // Guide
+    drawSlotGuide();
 
     if (!multiFaceLandmarks || multiFaceLandmarks.length === 0) return;
 
     const lm = multiFaceLandmarks[0];
-    const vw = els.video.videoWidth || 640;
+    const vw = els.video.videoWidth  || 640;
     const vh = els.video.videoHeight || 480;
-    const pts = pickKeypoints(lm, vw, vh);
-    placeFaceIntoSlot(pts);
-  }
 
-  function placeFaceIntoSlot(src) {
-    const { slot } = state.meta;
-    const dstL = slot.eye_left;
-    const dstR = slot.eye_right;
+    const src = pickKeypoints(lm, vw, vh);
 
-    // Angles & scale based on eye vector
+    // Destination anchors in canvas space
+    const dstL = scalePt(state.meta.slot.eye_left);
+    const dstR = scalePt(state.meta.slot.eye_right);
+    const dMid = [(dstL[0] + dstR[0]) / 2, (dstL[1] + dstR[1]) / 2];
+
+    // Source eye vector
     const sdx = src.eyeR[0] - src.eyeL[0];
     const sdy = src.eyeR[1] - src.eyeL[1];
+
+    // Destination eye vector
     const ddx = dstR[0] - dstL[0];
     const ddy = dstR[1] - dstL[1];
 
-    const sAngle = Math.atan2(sdy, sdx);
-    const dAngle = Math.atan2(ddy, ddx);
-    const angle = dAngle - sAngle;
-
+    // Rotation and scale
+    const angle = Math.atan2(ddy, ddx) - Math.atan2(sdy, sdx);
     const sDist = Math.hypot(sdx, sdy) || 1;
     const dDist = Math.hypot(ddx, ddy) || 1;
     const scale = dDist / sDist;
 
-    // Centers (source mid between eyes; destination mid between anchors)
+    // Source ROI around mid-eyes
     const sMid = [(src.eyeL[0] + src.eyeR[0]) / 2, (src.eyeL[1] + src.eyeR[1]) / 2];
-    const dMid = [(dstL[0] + dstR[0]) / 2, (dstL[1] + dstR[1]) / 2];
-
-    // ROI size from eyes to chin
-    const eyeToChin = Math.hypot(
-      (state.meta.slot.chin?.[0] ?? dMid[0]) - dMid[0],
-      (state.meta.slot.chin?.[1] ?? (dMid[1] + 80)) - dMid[1]
-    );
     const roiScale = state.meta.slot.roi_scale || 1.5;
-    const roiSize = Math.max(48, eyeToChin * 2 * roiScale);
+    const roiSize = Math.max(64, (Math.hypot(sdx, sdy) * roiScale));
 
-    // Grab ROI from the video into an offscreen canvas
     const off = document.createElement('canvas');
     const offCtx = off.getContext('2d');
     off.width = roiSize;
     off.height = roiSize;
 
-    // Map ROI in video coords: center at sMid
     const sx = sMid[0] - roiSize / 2;
     const sy = sMid[1] - roiSize / 2;
     offCtx.drawImage(els.video, sx, sy, roiSize, roiSize, 0, 0, roiSize, roiSize);
 
-    // Draw ROI into the preview canvas with rotation/scale and soft mask
+    // Place ROI onto preview at destination
     ctx.save();
     ctx.translate(dMid[0], dMid[1]);
     ctx.rotate(angle);
     ctx.scale(scale, scale);
     ctx.translate(-roiSize / 2, -roiSize / 2);
-
     ctx.drawImage(off, 0, 0, roiSize, roiSize);
 
     if (maskImg.complete) {
@@ -184,22 +192,17 @@
       ctx.drawImage(maskImg, 0, 0, roiSize, roiSize);
       ctx.globalCompositeOperation = 'source-over';
     }
-
     ctx.restore();
   }
 
-  // --- Camera start (helper or fallback) -------------------------------------
+  // ---------- Camera start ----------
   async function startCamera() {
     await Promise.all([waitImage(baseImg), waitImage(maskImg)]);
     fitPreviewCanvas();
 
-    // Prefer MediaPipe Camera helper if present
     if (typeof Camera !== 'undefined') {
       state.camera = new Camera(els.video, {
-        onFrame: async () => {
-          if (!state.running) return;
-          await state.faceMesh.send({ image: els.video });
-        },
+        onFrame: async () => { if (state.running) await state.faceMesh.send({ image: els.video }); },
         width: 640,
         height: 480,
         facingMode: 'user',
@@ -208,10 +211,9 @@
       return;
     }
 
-    // Fallback: plain getUserMedia + RAF loop
+    // Fallback
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480, facingMode: 'user' },
-      audio: false,
+      video: { width: 640, height: 480, facingMode: 'user' }, audio: false
     });
     els.video.srcObject = stream;
     els.video.setAttribute('playsinline', 'true');
@@ -227,20 +229,14 @@
     loop();
   }
 
-  // --- UI wiring -------------------------------------------------------------
+  // ---------- UI ----------
   els.startBtn.addEventListener('click', async () => {
     try {
       els.startBtn.disabled = true;
       els.banner.textContent = 'Initializing… grant camera permission if prompted.';
 
       // Secure-context guard
-      if (
-        !(
-          location.protocol === 'https:' ||
-          location.hostname === 'localhost' ||
-          location.protocol === 'file:'
-        )
-      ) {
+      if (!(location.protocol === 'https:' || location.hostname === 'localhost' || location.protocol === 'file:')) {
         throw new Error('Page must be served over HTTPS / localhost / file://');
       }
 
@@ -261,7 +257,6 @@
   });
 
   els.captureBtn.addEventListener('click', () => {
-    // Canvas already contains the composite; just enable Save
     els.saveBtn.disabled = false;
     els.banner.textContent = 'Captured. Tap Save to download.';
   });
@@ -278,36 +273,3 @@
       a.href = state.capturedUrl;
       a.download = 'face-replacement.png';
       document.body.appendChild(a);
-      a.click();
-      a.remove();
-
-      els.banner.textContent = 'Saved PNG.';
-    } catch (e) {
-      console.error(e);
-      els.banner.textContent = 'Save failed.';
-    }
-  });
-
-  els.resetBtn.addEventListener('click', () => {
-    try {
-      state.running = false;
-      const stream = els.video.srcObject;
-      if (stream && stream.getTracks) stream.getTracks().forEach(t => t.stop());
-      els.video.srcObject = null;
-
-      ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
-
-      els.captureBtn.disabled = true;
-      els.saveBtn.disabled = true;
-      els.resetBtn.disabled = true;
-      els.startBtn.disabled = false;
-      els.banner.textContent = 'Reset. Tap Start Camera to begin again.';
-    } catch (e) {
-      console.error(e);
-      els.banner.textContent = 'Reset failed.';
-    }
-  });
-
-  // Initial size so first paint is correct
-  fitPreviewCanvas();
-})();
