@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Face Replacement Demo</title>
+  <!-- Link the PWA manifest and stylesheet -->
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+  <meta name="theme-color" content="#007bff">
+</head>
+<body>
+  <!-- Main container for the demo. Video and canvas are layered
+       so that the live preview can show both the camera feed and
+       the composited character image on top. -->
+  <div id="app">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="preview"></canvas>
+    <div id="controls">
+      <button id="start-btn">Start Camera</button>
+      <button id="capture-btn" disabled>Capture</button>
+      <!-- Save button is actually an anchor; its href and download attributes are set at runtime -->
+      <a id="save-btn" class="button" role="button" download style="display:none;">Save</a>
+    </div>
+  </div>
+  <!-- Import main script as a module -->
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

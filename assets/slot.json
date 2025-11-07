@@ -1,0 +1,9 @@
+{
+  "slot": {
+    "eye_left": [150, 120],
+    "eye_right": [250, 120],
+    "chin": [200, 200],
+    "roi_scale": 1.5
+  },
+  "image_size": [400, 600]
+}
